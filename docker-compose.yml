@@ -1,0 +1,290 @@
+name: ead-ecommerce
+
+services:
+  # ===================================================================
+  # Core Infrastructure
+  # ===================================================================
+  config-server:
+    build:
+      context: ./services
+      dockerfile: Dockerfile.spring
+      args:
+        SERVICE: config-server
+    container_name: ead-config-server
+    restart: unless-stopped
+    networks:
+      - ead-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/gateway-service/default >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  discovery:
+    build:
+      context: ./services
+      dockerfile: Dockerfile.spring
+      args:
+        SERVICE: discovery
+    container_name: ead-discovery
+    restart: unless-stopped
+    ports:
+      - "8761:8761"
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+    depends_on:
+      config-server:
+        condition: service_healthy
+    networks:
+      - ead-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8761/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ===================================================================
+  # Customer Service & Database
+  # ===================================================================
+  mysql-customer:
+    image: mysql:8.0
+    container_name: ead-mysql-customer
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ead_user_db
+    volumes:
+      - mysql_customer_data:/var/lib/mysql
+    ports:
+      - "${MYSQL_CUSTOMER_HOST_PORT:-3307}:3306"
+    networks:
+      - ead-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  customer:
+    build:
+      context: ./services
+      dockerfile: Dockerfile.spring
+      args:
+        SERVICE: customer
+    container_name: ead-customer
+    restart: unless-stopped
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      SPRING_APPLICATION_JSON: '{"eureka":{"client":{"serviceUrl":{"defaultZone":"http://discovery:8761/eureka/"}}}}'
+      CUSTOMER_DB_HOST: mysql-customer
+      CUSTOMER_DB_PORT: "3306"
+      CUSTOMER_DB_USER: root
+      CUSTOMER_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery:
+        condition: service_healthy
+      mysql-customer:
+        condition: service_healthy
+    networks:
+      - ead-net
+
+  # ===================================================================
+  # Product Service & Database
+  # ===================================================================
+  mysql-product:
+    image: mysql:8.0
+    container_name: ead-mysql-product
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: productdb
+    volumes:
+      - mysql_product_data:/var/lib/mysql
+    ports:
+      - "${MYSQL_PRODUCT_HOST_PORT:-3308}:3306"
+    networks:
+      - ead-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  product:
+    build:
+      context: ./services
+      dockerfile: Dockerfile.spring
+      args:
+        SERVICE: product
+    container_name: ead-product
+    restart: unless-stopped
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      SPRING_APPLICATION_JSON: '{"eureka":{"client":{"serviceUrl":{"defaultZone":"http://discovery:8761/eureka/"}}}}'
+      PRODUCT_DB_HOST: mysql-product
+      PRODUCT_DB_PORT: "3306"
+      PRODUCT_DB_USER: root
+      PRODUCT_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery:
+        condition: service_healthy
+      mysql-product:
+        condition: service_healthy
+    networks:
+      - ead-net
+
+  # ===================================================================
+  # Order Service & Database
+  # ===================================================================
+  mysql-order:
+    image: mysql:8.0
+    container_name: ead-mysql-order
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: orders
+    volumes:
+      - mysql_order_data:/var/lib/mysql
+    ports:
+      - "${MYSQL_ORDER_HOST_PORT:-3309}:3306"
+    networks:
+      - ead-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  order:
+    build:
+      context: ./services
+      dockerfile: Dockerfile.spring
+      args:
+        SERVICE: order
+    container_name: ead-order
+    restart: unless-stopped
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      SPRING_APPLICATION_JSON: '{"eureka":{"client":{"serviceUrl":{"defaultZone":"http://discovery:8761/eureka/"}}}}'
+      ORDER_DB_HOST: mysql-order
+      ORDER_DB_PORT: "3306"
+      ORDER_DB_USER: root
+      ORDER_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery:
+        condition: service_healthy
+      mysql-order:
+        condition: service_healthy
+    networks:
+      - ead-net
+
+  # ===================================================================
+  # Payment Service & Database
+  # ===================================================================
+  mongo:
+    image: mongo:7
+    container_name: ead-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "${MONGO_HOST_PORT:-27018}:27017"
+    networks:
+      - ead-net
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' -u $$MONGO_INITDB_ROOT_USERNAME -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  payment:
+    build: ./services/payment
+    container_name: ead-payment
+    restart: unless-stopped
+    environment:
+      PORT: "8010"
+      DB_LOCAL_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/payment?authSource=admin
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_placeholder_set_STRIPE_SECRET_KEY_in_env}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - ead-net
+
+  # ===================================================================
+  # Gateway & Frontend
+  # ===================================================================
+  gateway:
+    build:
+      context: ./services
+      dockerfile: Dockerfile.spring
+      args:
+        SERVICE: gateway
+    container_name: ead-gateway
+    restart: unless-stopped
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      JWT_SECRET: ${JWT_SECRET}
+      CUSTOMER_SERVICE_URL: http://customer:8090
+      PRODUCT_SERVICE_URL: http://product:8070
+      ORDER_SERVICE_URL: http://order:7080
+      PAYMENT_SERVICE_URL: http://payment:8010
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+    ports:
+      - "8222:8222"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery:
+        condition: service_healthy
+      customer:
+        condition: service_started
+      product:
+        condition: service_started
+      order:
+        condition: service_started
+      payment:
+        condition: service_started
+    networks:
+      - ead-net
+
+  frontend:
+    build: ./frontend
+    container_name: ead-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - gateway
+    networks:
+      - ead-net
+
+networks:
+  ead-net:
+    driver: bridge
+
+volumes:
+  mysql_customer_data:
+  mysql_product_data:
+  mysql_order_data:
+  mongo_data:

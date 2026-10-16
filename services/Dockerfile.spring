@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# Shared multi-stage build for every Spring Boot service in this folder.
+# Build with:  docker build -f Dockerfile.spring --build-arg SERVICE=customer .
+
+# ---- build stage ----
+FROM maven:3.9-eclipse-temurin-17 AS build
+ARG SERVICE
+WORKDIR /workspace
+
+# Resolve dependencies first so they are cached between source changes
+COPY ${SERVICE}/pom.xml ./pom.xml
+RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
+
+COPY ${SERVICE}/src ./src
+RUN --mount=type=cache,target=/root/.m2 mvn -B -q package -DskipTests \
+    && cp target/*.jar /workspace/app.jar
+
+# ---- runtime stage ----
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+RUN useradd --system --no-create-home appuser
+COPY --from=build /workspace/app.jar app.jar
+USER appuser
+
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75"
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]
